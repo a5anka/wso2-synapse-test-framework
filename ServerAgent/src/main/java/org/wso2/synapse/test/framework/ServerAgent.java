@@ -42,9 +42,6 @@ import javax.ws.rs.core.Response;
 public class ServerAgent {
 
     private static final String DEFAULT_SYNAPSE_HOME_LOCATION = ".";
-
-    private static final String SYNAPSE_KILL_COMMAND = DEFAULT_SYNAPSE_HOME_LOCATION + File.separator + "bin" + File.separator +
-            "synapse-stop.sh";
     public static final String INTEGRATION_SYNAPSE_XML = "integration-synapse.xml";
 
     private ServerLogReader inputStreamHandler;
@@ -100,14 +97,13 @@ public class ServerAgent {
     public void stopServer() {
         if (process != null) {
             try {
-                File synapseHome = Paths.get(getSynapseHome()).toFile();
-                String synapseKillCommand = synapseHome + File.separator + "bin" + File.separator + "synapse-stop.sh";
-                Process killprocess = Runtime.getRuntime().exec(synapseKillCommand, null, synapseHome);
-                new ServerLogReader("errorStream", killprocess.getErrorStream()).start();
-                new ServerLogReader("inputStream", killprocess.getInputStream());
+                String synapseKillCommand = getSynapseHome() + File.separator + "bin" + File.separator + "synapse-stop.sh";
+                Runtime.getRuntime().exec(synapseKillCommand);
             } catch (IOException e) {
                 log.error("Error while stopping synapse server", e);
             }
+            inputStreamHandler.stop();
+            errorStreamHandler.stop();
             process = null;
         }
     }
@@ -121,7 +117,9 @@ public class ServerAgent {
     @POST
     @Path("/upload-config")
     public void postFile(@Context HttpStreamer httpStreamer) throws IOException {
-        httpStreamer.callback(new HttpStreamHandlerImpl(INTEGRATION_SYNAPSE_XML));
+        httpStreamer.callback(new HttpStreamHandlerImpl(
+                getSynapseHome() + File.separator + "repository" + File.separator + "conf" + File.separator
+                        + INTEGRATION_SYNAPSE_XML));
     }
 
     private static class HttpStreamHandlerImpl implements HttpStreamHandler {
@@ -131,7 +129,7 @@ public class ServerAgent {
         private org.wso2.msf4j.Response response;
 
         HttpStreamHandlerImpl(String fileName) throws FileNotFoundException {
-            File file = Paths.get(SYNAPSE_SAMPLE_DIR, fileName).toFile();
+            File file = Paths.get(fileName).toFile();
             if (file.getParentFile().exists() || file.getParentFile().mkdirs()) {
                 fileChannel = new FileOutputStream(file).getChannel();
             }
