@@ -17,11 +17,21 @@ package org.wso2.synapse.test.framework;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.wso2.msf4j.HttpStreamHandler;
+import org.wso2.msf4j.HttpStreamer;
 
-import javax.ws.rs.GET;
-import javax.ws.rs.Path;
 import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
+import javax.ws.rs.GET;
+import javax.ws.rs.POST;
+import javax.ws.rs.Path;
+import javax.ws.rs.core.Context;
+import javax.ws.rs.core.Response;
 
 /**
  * This is a Agent to run in synapse server machine
@@ -31,33 +41,42 @@ import java.nio.file.Paths;
 @Path("/synapseAgent")
 public class ServerAgent {
 
-    private static final java.nio.file.Path MOUNT_PATH = Paths.get(".");
+    private static final String DEFAULT_SYNAPSE_HOME_LOCATION = ".";
+
+    private static final String SYNAPSE_KILL_COMMAND = DEFAULT_SYNAPSE_HOME_LOCATION + File.separator + "bin" + File.separator +
+            "synapse-stop.sh";
+    public static final String INTEGRATION_SYNAPSE_XML = "integration-synapse.xml";
 
     private ServerLogReader inputStreamHandler;
     private ServerLogReader errorStreamHandler;
 
     private static final Log log = LogFactory.getLog(ServerAgent.class);
 
+    private Process process;
+
     @GET
     @Path("/start")
     public void startServer() {
 
-
-        Process process = null;
         try {
+            String synapseHomeLocation = getSynapseHome();
 
-            File commandDir = Paths.get(MOUNT_PATH.toString()).toFile();
+            File synapseHome = Paths.get(synapseHomeLocation).toFile();
 
             String[] cmdArray;
             // For Windows
             if (System.getProperty("os.name").toLowerCase().contains("windows")) {
-                cmdArray = new String[]{"cmd.exe", "/c", commandDir + File.separator + "synapse.bat"};
+                cmdArray = new String[]{ "cmd.exe", "/c", synapseHomeLocation + File.separator  + "bin" + File.separator +
+                        "synapse.bat", "-synapseConfig", synapseHomeLocation + File.separator + "repository"
+                        + File.separator + "conf" + File.separator + INTEGRATION_SYNAPSE_XML};
             } else {
                 // For Unix
-                cmdArray = new String[]{"sh", commandDir + File.separator + "synapse.sh"};
+                cmdArray = new String[]{ "sh", synapseHomeLocation + File.separator + "bin" + File.separator +
+                        "synapse.sh", "-synapseConfig", synapseHomeLocation + File.separator + "repository"
+                        + File.separator + "conf" + File.separator + INTEGRATION_SYNAPSE_XML};
             }
 
-            process = Runtime.getRuntime().exec(cmdArray, null, commandDir);
+            process = Runtime.getRuntime().exec(cmdArray, null, synapseHome);
 
             errorStreamHandler = new ServerLogReader("errorStream", process.getErrorStream());
             inputStreamHandler = new ServerLogReader("inputStream", process.getInputStream());
@@ -72,10 +91,82 @@ public class ServerAgent {
 
     }
 
+    private String getSynapseHome() {
+        return System.getProperty("synapse.home", DEFAULT_SYNAPSE_HOME_LOCATION);
+    }
+
     @GET
     @Path("/stop")
     public void stopServer() {
-
+        if (process != null) {
+            try {
+                File synapseHome = Paths.get(getSynapseHome()).toFile();
+                String synapseKillCommand = synapseHome + File.separator + "bin" + File.separator + "synapse-stop.sh";
+                Process killprocess = Runtime.getRuntime().exec(synapseKillCommand, null, synapseHome);
+                new ServerLogReader("errorStream", killprocess.getErrorStream()).start();
+                new ServerLogReader("inputStream", killprocess.getInputStream());
+            } catch (IOException e) {
+                log.error("Error while stopping synapse server", e);
+            }
+            process = null;
+        }
     }
 
+    /**
+     * Upload a file with streaming.
+     *
+     * @param httpStreamer Handle for setting the {@link HttpStreamHandler}callback for streaming.
+     * @throws IOException
+     */
+    @POST
+    @Path("/upload-config")
+    public void postFile(@Context HttpStreamer httpStreamer) throws IOException {
+        httpStreamer.callback(new HttpStreamHandlerImpl(INTEGRATION_SYNAPSE_XML));
+    }
+
+    private static class HttpStreamHandlerImpl implements HttpStreamHandler {
+        private static final String SYNAPSE_SAMPLE_DIR = DEFAULT_SYNAPSE_HOME_LOCATION + File.separator + "repository"
+                + File.separator + "conf";
+        private FileChannel fileChannel = null;
+        private org.wso2.msf4j.Response response;
+
+        HttpStreamHandlerImpl(String fileName) throws FileNotFoundException {
+            File file = Paths.get(SYNAPSE_SAMPLE_DIR, fileName).toFile();
+            if (file.getParentFile().exists() || file.getParentFile().mkdirs()) {
+                fileChannel = new FileOutputStream(file).getChannel();
+            }
+        }
+
+        @Override
+        public void init(org.wso2.msf4j.Response response) {
+            this.response = response;
+        }
+
+        @Override
+        public void end() throws Exception {
+            fileChannel.close();
+            response.setStatus(Response.Status.ACCEPTED.getStatusCode());
+            response.send();
+        }
+
+        @Override
+        public void chunk(ByteBuffer content) throws Exception {
+            if (fileChannel == null) {
+                throw new IOException("Unable to write file");
+            }
+            fileChannel.write(content);
+        }
+
+        @Override
+        public void error(Throwable cause) {
+            try {
+                if (fileChannel != null) {
+                    fileChannel.close();
+                }
+            } catch (IOException e) {
+                // Log if unable to close the output stream
+                log.error("Unable to close file output stream", e);
+            }
+        }
+    }
 }
